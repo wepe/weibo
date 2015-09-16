@@ -14,13 +14,13 @@ This is good,and we can go further based on this:
 
 """
 
-
+import cPickle
 import pandas as pd
 import numpy as np
 from genUidStat import loadData,genUidStat
 from evaluation import precision
 from runTime import runTime
-
+from multiprocessing import Pool
 
 def score(uid_data,pred):
 	"""
@@ -57,26 +57,22 @@ def search(uid_data,target,args):
 	best_pred = list(pred)
 	best_pred.insert(target_index,target_median)
 	best_score = score(uid_data,best_pred)
-	median_is_best = True
 	for num in range(target_min,target_max+1):
 		this_pred = list(pred)
 		this_pred.insert(target_index,num)
 		this_score = score(uid_data,this_pred)
-		if this_score >= best_score:
+		if this_score >= best_score:                  
 			if this_score > best_score:
-				median_is_best = False
-			best_num.append(num)
-			best_score = this_score
+				best_num = [num]
+				best_score = this_score
+			else:
+				best_num.append(num)                       
 			
-	if median_is_best:
-		return target_median
-	else:
-		tmp = best_num[1:]
-		return tmp[np.array([abs(i - target_median) for i in tmp]).argmin()]
-	
-@runTime
-def predict_by_search(submission=True):
-	
+	return best_num[np.array([abs(i - target_median) for i in best_num]).argmin()]
+
+##search best target value for all uid,return a dictionary that store {uid:[f,c,l]}
+def search_all_uid():
+	"""
 	traindata,testdata = loadData()
 	stat_dic = genUidStat()
 	
@@ -92,7 +88,46 @@ def predict_by_search(submission=True):
 		cp = search(uid_data,'comment',args)	
 		lp = search(uid_data,'like',args)	
 		uid_best_pred[uid] = [fp,cp,lp]
+	"""
+	#multiprocessing version for geting uid_best_pred
+	traindata,testdata = loadData()
+	stat_dic = genUidStat()
+	uid_best_pred = {}
+	pool = Pool()
+	uids,f,c,l = [],[],[],[]
+	for uid in stat_dic:
+		print "search uid:{}".format(uid)
+		uid_data = traindata[traindata.uid == uid]
+		arguments = stat_dic[uid][['forward_min','forward_median','forward_max','comment_min',\
+					'comment_median','comment_max','like_min','like_median','like_max']]
+		arguments = tuple([int(i) for i in arguments]) 
+		f.append(pool.apply_async(search,args=(uid_data,'forward',arguments)))
+		c.append(pool.apply_async(search,args=(uid_data,'comment',arguments)))
+		l.append(pool.apply_async(search,args=(uid_data,'like',arguments)))
+		uids.append(uid)
+	pool.close()
+	pool.join()
+	f = [i.get() for i in f]
+	c = [i.get() for i in c]
+	l = [i.get() for i in l]
 	
+	for i in range(len(uids)):
+		uid_best_pred[uids[i]] = [f[i],c[i],l[i]]
+	
+	try:
+		cPickle.dump(uid_best_pred,open('uid_best_pred.pkl','w'))
+	except Exception:
+		pass
+		
+	return uid_best_pred
+
+	
+@runTime
+def predict_by_search(submission=True):
+	traindata,testdata = loadData()
+	uid_best_pred = search_all_uid()
+	print "search done,now predict on traindata and testdata..."
+
 	#predict traindata with uid's best fp,cp,lp
 	forward,comment,like = [],[],[]
 	for uid in traindata['uid']:
@@ -125,7 +160,7 @@ def predict_by_search(submission=True):
 				like.append(0)
 		test_pred['fp'],test_pred['cp'],test_pred['lp'] = forward,comment,like
 		
-		
+		#generate submission file
 		result = []
 		filename = "weibo_predict_search.txt"
 		for _,row in test_pred.iterrows():
